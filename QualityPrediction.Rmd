@@ -1,0 +1,417 @@
+---
+title: "Practical Machine Learning: Classifying how well an activity was done"
+output: 
+  html_document:
+    keep_md: true
+---
+
+```{r setup}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+### Introduction to the assignment
+The task in this assignment is to analyse personal activity data taken by sensors
+during a weight lifting exercise in order to predict how well the exercise was
+done. To create the data set 6 participants performed barbell lifts correctly 
+(class A) and incorrectly with different deviations in movement (classes B-F). 
+The data comes from accelerometers on the belt, forearm and arm of all participants
+as well as from the dumbbell. Further information can be found here:
+http://groupware.les.inf.puc-rio.br/har
+
+### Loading the data
+To start the analyis, the training data is loaded:
+```{r, message=FALSE}
+library(lubridate)
+
+if (!file.exists("pml-training.csv")){
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                      "pml-training.csv")
+        print(now())
+  }
+training_data<-read.csv("pml-training.csv", header=TRUE)
+```
+
+It has the following dimensions:
+```{r}
+dim(training_data)
+```
+
+For later use the testing data is also loaded:
+```{r}
+if (!file.exists("pml-testing.csv")){
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                      "pml-testing.csv")
+        print(now())
+  }
+testing_data<-read.csv("pml-testing.csv", header=TRUE)
+```
+
+We will not be looking at the data until the analysis is finished. 
+
+### Separation of training data in training and validation data
+In this assignment I use random sampling as cross validation, since I want to include
+activitiy data of all of the participants in the training set which would not 
+necessarily be the case in using k-fold. For each run 75% of the (training) data 
+will be used for training, the other 25% will be used for validation. The classification
+of the activity is stored in the "classe" variable.
+
+```{r, message=FALSE}
+library(caret)
+set.seed(334)
+inTrain<-createDataPartition(y=training_data$classe, p=0.75, list=FALSE)
+training<-training_data[inTrain,]
+validate<-training_data[-inTrain,]
+```
+
+### Exploration of the training data
+According to the assignment any of the variables of the data set can be used for
+the prediction of the classe variable. Before predicting, let's have a first look 
+at the training data.
+
+```{r}
+str(training)
+```
+
+As can be seen on the first view, the data set contains factor, integer and numeric
+variables and a lot of NAs. 
+
+Let's first have a look at the NAs. Calculation of the percentage of NA per variable
+```{r}
+percentageNA<-apply(is.na(training),2,sum)/dim(training)[1]
+```
+
+and for better readability presention of the result as a table
+```{r}
+table(percentageNA)
+```
+
+As we can see from this, 67 variables contain (almost) no information at all and
+can be left out for further analysis of the data set. Therefore we can reduce
+the training data:
+```{r}
+training_red<-training[percentageNA<0.1]
+```
+
+In the resulting data set there seem to be a certain number of variables that 
+mostly contain the value "". Let's have a look at this:
+```{r}
+percentageEmpty<-apply(training_red=="",2,sum)/dim(training)[1]
+table(percentageEmpty)
+```
+
+As we see, another 33 variables can be left out:
+```{r}
+training_red2<-training_red[percentageEmpty<0.1]
+```
+
+Now, except of the "administrative" columns 1 to 7 we only have integer or numeric
+columns. Since we want our model to learn from sensor data and not from 
+"administrative" data that has no information for later prediction, we additionally 
+reduce the data set by leaving out the administrative columns.
+```{r}
+training_red3<-training_red2[8:60]
+```
+
+Now, we only have 53 instead of 160 columns left:
+```{r}
+dim(training_red3)
+```
+
+This preprocessing is now done for the whole set of the training data as 
+well as for the testing data:
+```{r}
+training_data_red<-training_data[percentageNA<0.1]
+training_data_red2<-training_data_red[percentageEmpty<0.1]
+data_train<-training_data_red2[8:60]
+
+testing_data_red<-testing_data[percentageNA<0.1]
+testing_data_red2<-testing_data_red[percentageEmpty<0.1]
+data_test<-testing_data_red2[8:60]
+```
+
+Note: a similar result (except of for the administrative columns) will also be given by nearZeroVars.
+
+### Choosing the relevant predictors and adequate method using cross validation
+
+At first we quickly prepare the data sets we need for training and validating.
+```{r}
+# no contains the numbers for the seed to be used
+no<-c(334,2465,126,8832,45)
+
+# for all 5 iterations the training and validate data sets are created and stored for later usage
+set.seed(no[1])
+inTrain<-createDataPartition(y=data_train$classe, p=0.75, list=FALSE)
+training1<-data_train[inTrain,]
+validate1<-data_train[-inTrain,]
+
+set.seed(no[2])
+inTrain<-createDataPartition(y=data_train$classe, p=0.75, list=FALSE)
+training2<-data_train[inTrain,]
+validate2<-data_train[-inTrain,]
+
+set.seed(no[3])
+inTrain<-createDataPartition(y=data_train$classe, p=0.75, list=FALSE)
+training3<-data_train[inTrain,]
+validate3<-data_train[-inTrain,]
+
+set.seed(no[4])
+inTrain<-createDataPartition(y=data_train$classe, p=0.75, list=FALSE)
+training4<-data_train[inTrain,]
+validate4<-data_train[-inTrain,]
+
+set.seed(no[5])
+inTrain<-createDataPartition(y=data_train$classe, p=0.75, list=FALSE)
+training5<-data_train[inTrain,]
+validate5<-data_train[-inTrain,]
+```
+
+
+#### Principal components analysis
+
+Now we have a look at the principal components of the data set.
+```{r, message=FALSE}
+library(stats)
+
+for (i in 1:5){
+        
+        # choice of correct training data set
+        if (i==1) {training<-training1} else {
+                if (i==2) {training<-training2} else {
+                        if (i==3) {training<-training3} else {
+                                if (i==4) {training<-training4} else {
+                                        training<-training5
+                                }
+                        }
+                }
+        }
+        
+        # calculation of PCA
+        training_pca <- prcomp(training[,1:52], scale = TRUE)
+        #plot(training_pca)
+        biplot(training_pca,scale=0)
+
+        # percentage of explained variance
+        percent_var <- training_pca$sdev^2/sum(training_pca$sdev^2)
+
+        # Screeplot
+        plot(percent_var, type="b", xlab = "Numbers of principal component (PC)",
+             ylab = "Percentage of explained variance by PC")
+
+        # cumulated variance
+        cumulated_var <- cumsum(training_pca$sdev^2)/sum(training_pca$sdev^2)
+        plot(cumulated_var)
+        
+        # create training set from classe variable and principal components for later use
+        if (i==1) {training_pca1<-training_pca} else {
+                if (i==2) {training_pca2<-training_pca} else {
+                        if (i==3) {training_pca3<-training_pca} else {
+                                if (i==4) {training_pca4<-training_pca} else {
+                                        training_pca5<-training_pca
+                                }
+                        }
+                }
+        }
+}
+```
+
+In the following the methods rf and rpart are compared each using 18 or 6 principal components. 18 components since they explain about 90% of the variance, 6 components since there is a change in the scree plot. It might be possible to combine the two methods with 6 components to receive good results but before deciding on testing that, let's have look at the results for these 4 variants. For each variant 5 iterations are done.
+
+#### Random forest with 18 principal components
+```{r}
+# initialization of variable for storing accuracy of method
+acc_rf18<-numeric()
+
+for (i in 1:5){
+
+        # choice of correct pca, training and validation data sets
+        if (i==1) {training_pca<-training_pca1; training<-training1; validate<-validate1} else {
+                if (i==2) {training_pca<-training_pca2; training<-training2; validate<-validate2} else {
+                        if (i==3) {training_pca<-training_pca3; training<-training3; validate<-validate3} else {
+                                if (i==4) {training_pca<-training_pca4; training<-training4; validate<-validate4} else {
+                                        training_pca<-training_pca5; training<-training5; validate<-validate5
+                                }
+                        }
+                }
+        }
+
+        # create training set from classe variable and principal components
+        train_pca<-data.frame(classe = training$classe, training_pca$x)
+
+        # in this case we use the classe variable and 18 PCs
+        train_pca <- train_pca[,1:19]
+
+        # training of random forest model
+        modFit <- train(classe ~ .,data = train_pca, method = "rf")
+        print(modFit)
+
+        # before actual prediction, validation data needs to be transformed according to principle
+        # components from training data
+
+        test <- predict(training_pca, newdata = validate)
+        print(str(test))
+        test <- as.data.frame(test)
+
+        # in this case we use 18 PCs (see above), the test data has no classe variable
+        test <- test[,1:18]
+
+        # prediction of the classe variable from the test data with the calculated model from above
+        pred <- predict(modFit, test)
+        print(table(validate$classe,pred))
+        
+        # calculate and store accuracy for later use
+        acc_rf18<-rbind(acc_rf18,sum(validate$classe==pred)/length(pred))
+}
+
+print(acc_rf18)
+```
+
+#### Random forest with 6 principal components
+```{r}
+# initialization of variable for storing accuracy of method
+acc_rf6<-numeric()
+
+for (i in 1:5){
+
+        # choice of correct pca, training and validation data sets
+        if (i==1) {training_pca<-training_pca1; training<-training1; validate<-validate1} else {
+                if (i==2) {training_pca<-training_pca2; training<-training2; validate<-validate2} else {
+                        if (i==3) {training_pca<-training_pca3; training<-training3; validate<-validate3} else {
+                                if (i==4) {training_pca<-training_pca4; training<-training4; validate<-validate4} else {
+                                        training_pca<-training_pca5; training<-training5; validate<-validate5
+                                }
+                        }
+                }
+        }
+
+        # create training set from classe variable and principal components
+        train_pca<-data.frame(classe = training$classe, training_pca$x)
+
+        # in this case we use the classe variable and 6 PCs
+        train_pca <- train_pca[,1:7]
+
+        # training of random forest model
+        modFit <- train(classe ~ .,data = train_pca, method = "rf")
+        print(modFit)
+
+        # before actual prediction, validation data needs to be transformed according to principle
+        # components from training data
+
+        test <- predict(training_pca, newdata = validate)
+        print(str(test))
+        test <- as.data.frame(test)
+
+        # in this case we use 6 PCs (see above), the test data has no classe variable
+        test <- test[,1:6]
+
+        # prediction of the classe variable from the test data with the calculated model from above
+        pred <- predict(modFit, test)
+        print(table(validate$classe,pred))
+        
+        # calculate and store accuracy for later use
+        acc_rf6<-rbind(acc_rf6,sum(validate$classe==pred)/length(pred))
+}
+
+print(acc_rf6)
+```
+
+
+#### rpart with 18 principal components
+```{r}
+# initialization of variable for storing accuracy of method
+acc_rpart18<-numeric()
+
+for (i in 1:5){
+
+        # choice of correct pca, training and validation data sets
+        if (i==1) {training_pca<-training_pca1; training<-training1; validate<-validate1} else {
+                if (i==2) {training_pca<-training_pca2; training<-training2; validate<-validate2} else {
+                        if (i==3) {training_pca<-training_pca3; training<-training3; validate<-validate3} else {
+                                if (i==4) {training_pca<-training_pca4; training<-training4; validate<-validate4} else {
+                                        training_pca<-training_pca5; training<-training5; validate<-validate5
+                                }
+                        }
+                }
+        }
+
+        # create training set from classe variable and principal components
+        train_pca<-data.frame(classe = training$classe, training_pca$x)
+
+        # in this case we use the classe variable and 18 PCs
+        train_pca <- train_pca[,1:19]
+
+        # training with rpart
+        modFit <- train(classe ~ .,data = train_pca, method = "rpart")
+        print(modFit)
+
+        # before actual prediction, validation data needs to be transformed according to principle
+        # components from training data
+
+        test <- predict(training_pca, newdata = validate)
+        print(str(test))
+        test <- as.data.frame(test)
+
+        # in this case we use 18 PCs (see above), the test data has no classe variable
+        test <- test[,1:18]
+
+        # prediction of the classe variable from the test data with the calculated model from above
+        pred <- predict(modFit, test)
+        print(table(validate$classe,pred))
+        
+        # calculate and store accuracy for later use
+        acc_rpart18<-rbind(acc_rpart18,sum(validate$classe==pred)/length(pred))
+}
+
+print(acc_rpart18)
+```
+
+#### rpart with 6 principal components
+```{r}
+# initialization of variable for storing accuracy of method
+acc_rpart6<-numeric()
+
+for (i in 1:5){
+
+        # choice of correct pca, training and validation data sets
+        if (i==1) {training_pca<-training_pca1; training<-training1; validate<-validate1} else {
+                if (i==2) {training_pca<-training_pca2; training<-training2; validate<-validate2} else {
+                        if (i==3) {training_pca<-training_pca3; training<-training3; validate<-validate3} else {
+                                if (i==4) {training_pca<-training_pca4; training<-training4; validate<-validate4} else {
+                                        training_pca<-training_pca5; training<-training5; validate<-validate5
+                                }
+                        }
+                }
+        }
+
+        # create training set from classe variable and principal components
+        train_pca<-data.frame(classe = training$classe, training_pca$x)
+
+        # in this case we use the classe variable and 6 PCs
+        train_pca <- train_pca[,1:7]
+
+        # training of random forest model
+        modFit <- train(classe ~ .,data = train_pca, method = "rpart")
+        print(modFit)
+
+        # before actual prediction, validation data needs to be transformed according to principle
+        # components from training data
+
+        test <- predict(training_pca, newdata = validate)
+        print(str(test))
+        test <- as.data.frame(test)
+
+        # in this case we use 6 PCs (see above), the test data has no classe variable
+        test <- test[,1:6]
+
+        # prediction of the classe variable from the test data with the calculated model from above
+        pred <- predict(modFit, test)
+        print(table(validate$classe,pred))
+        
+        # calculate and store accuracy for later use
+        acc_rpart6<-rbind(acc_rpart6,sum(validate$classe==pred)/length(pred))
+}
+
+print(acc_rpart6)
+```
+
+### Prediction of testing data with chosen model and predictors
+tbd
